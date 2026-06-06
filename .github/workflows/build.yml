@@ -15,6 +15,10 @@ on:
         description: 'Upload build artifacts'
         type: boolean
         default: true
+      publish_release:
+        description: 'Publish GitHub release with artifacts'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -55,25 +59,81 @@ jobs:
             exit 1
           }
 
-      - name: Bundle Runtime DLLs
+      - name: Bundle Required Runtime DLLs
         shell: pwsh
         run: |
-          $dllSource = "recorder/build/vcpkg_installed/x64-windows/bin"
-          $dllDest = "recorder/build/Release"
-          if (Test-Path $dllSource) {
-            Copy-Item -Path (Join-Path $dllSource "*.dll") -Destination $dllDest -Force
-            Write-Host "Bundled DLLs:"
-            Get-ChildItem -Path $dllDest -Filter "*.dll" | Select-Object Name, Length
-          } else {
-            Write-Host "No DLL directory found - static build assumed"
+          $ErrorActionPreference = 'Stop'
+
+          $exe = "recorder/build/Release/recorder-app.exe"
+          $binDir = "recorder/build/vcpkg_installed/x64-windows/bin"
+          $dest = "recorder/build/Release"
+
+          if (-not (Test-Path $binDir)) {
+            Write-Host "No vcpkg bin directory - static build assumed"
+            exit 0
           }
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstallPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsInstallPath) { throw "MSVC build tools not found" }
+          $vcvars = Join-Path $vsInstallPath "VC\Auxiliary\Build\vcvars64.bat"
+
+          cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') {
+              [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
+            }
+          }
+
+          $dumpbinOutput = & dumpbin /dependents $exe 2>&1 | Out-String
+          $importedDlls = [regex]::Matches($dumpbinOutput, '(?m)^\s+([\w-]+\.dll)\s*$') |
+            ForEach-Object { $_.Groups[1].Value } |
+            Sort-Object -Unique
+
+          Write-Host "Imported DLLs (from PE import table):"
+          $importedDlls | ForEach-Object { Write-Host "  $_" }
+
+          Get-ChildItem -Path $dest -Filter "*.dll" -ErrorAction SilentlyContinue | Remove-Item -Force
+
+          $processed = @{}
+          $queue = New-Object System.Collections.Generic.Queue[string]
+          $queue.Enqueue($exe)
+
+          while ($queue.Count -gt 0) {
+            $current = $queue.Dequeue()
+            $key = [System.IO.Path]::GetFileName($current).ToLowerInvariant()
+            if ($processed.ContainsKey($key)) { continue }
+            $processed[$key] = $true
+
+            Write-Host "Scanning: $([System.IO.Path]::GetFileName($current))"
+            $output = & dumpbin /dependents $current 2>&1 | Out-String
+            $imports = [regex]::Matches($output, '(?m)^\s+([\w-]+\.dll)\s*$') |
+              ForEach-Object { $_.Groups[1].Value } |
+              Sort-Object -Unique
+
+            foreach ($dll in $imports) {
+              $src = Join-Path $binDir $dll
+              if (Test-Path $src) {
+                $destDll = Join-Path $dest $dll
+                if (-not (Test-Path $destDll)) {
+                  Copy-Item $src $dest -Force
+                  $queue.Enqueue($destDll)
+                }
+              }
+            }
+          }
+
+          Write-Host ""
+          Write-Host "Bundled DLLs (rest are system/VC++ Redist):"
+          Get-ChildItem -Path $dest -Filter "*.dll" | Select-Object Name, Length
 
       - name: Upload Artifact
         if: ${{ inputs.upload_artifacts }}
         uses: actions/upload-artifact@v4
         with:
           name: recorder-windows
-          path: recorder/build/Release
+          path: |
+            recorder/build/Release/*.exe
+            recorder/build/Release/*.dll
           retention-days: 7
 
   build-recorder-linux:
@@ -172,3 +232,37 @@ jobs:
           name: analyzer
           path: analyzer/dist/
           retention-days: 7
+
+  release:
+    if: ${{ inputs.publish_release }}
+    needs: [build-recorder-windows, build-recorder-linux, build-analyzer]
+    runs-on: ubuntu-latest
+    name: Publish Release
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - name: Zip artifacts
+        run: |
+          cd artifacts
+          for dir in recorder-windows analyzer; do
+            if [ -d "$dir" ]; then
+              zip -r "${dir}.zip" "$dir"
+            fi
+          done
+          ls -la
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Build ${{ github.run_number }}
+          files: |
+            artifacts/recorder-windows.zip
+            artifacts/recorder-linux/recorder-app
+            artifacts/analyzer.zip
