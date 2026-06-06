@@ -3,10 +3,12 @@
 #include "../serializer/serializer.h"
 #include <recorder.h>
 #include <chrono>
-#include <print>
+#include <format>
 #include <fstream>
+#include <iostream>
 #include <thread>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 
 using namespace std::literals;
@@ -64,16 +66,16 @@ void ConsoleController::Run()
 {
     auto& rec = m_recorder;
     rec.Start();
-    std::println("Keep spamming, press Esc to end...");
+    std::cout << "Keep spamming, press Esc to end...\n";
     std::thread stat_thread([&]()
     {
         while (rec.Recording())
         {
-            std::print("\rDevices: {}, Inputs: {}", rec.DeviceCount(), rec.InputCount());
+            std::cout << std::format("\rDevices: {}, Inputs: {}", rec.DeviceCount(), rec.InputCount());
             std::fflush(stdout);
             std::this_thread::sleep_for(100ms);
         }
-        std::println();
+        std::cout << '\n';
     });
     while (portable_getch() != 27 /* ESC */)
     {
@@ -81,20 +83,20 @@ void ConsoleController::Run()
     rec.Stop();
     stat_thread.join();
     auto& inputs = rec.Inputs();
-    std::println("Recorded {} devices", inputs.size());
+    std::cout << std::format("Recorded {} devices\n", inputs.size());
     inputs.cvisit_all([&](const Recorder::InputMap::value_type& input_pair) {
         auto& [device_id, events] = input_pair;
         if (events.size() == 0)
             return;
-        std::println("- Device {}", device_id);
+        std::cout << std::format("- Device {}\n", device_id);
         auto& device_map = rec.Devices();
         device_map.cvisit(device_id, [&](const Recorder::DeviceMap::value_type& device_pair) {
-            std::println("  - Name: {}", device_pair.second.Name);
+            std::cout << std::format("  - Name: {}\n", device_pair.second.Name);
         });
-        std::println("  - Recorded {} events", events.size());
-        std::println("  - First 100 diffs:");
+        std::cout << std::format("  - Recorded {} events\n", events.size());
+        std::cout << "  - First 100 diffs:\n";
         for (std::size_t i = 1; i < std::min((std::size_t)101, events.size()); i++)
-            std::println("    - Diff {}: {}us", i, events[i].Timestamp - events[i - 1].Timestamp);
+            std::cout << std::format("    - Diff {}: {}us\n", i, events[i].Timestamp - events[i - 1].Timestamp);
     });
 
 #ifdef __linux__

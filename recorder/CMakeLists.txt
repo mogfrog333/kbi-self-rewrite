@@ -7,6 +7,9 @@ project(recorder LANGUAGES C CXX)
 
 if (MSVC)
     add_compile_options(/Zc:__cplusplus)
+    add_compile_definitions(NOMINMAX)
+elseif(WIN32)
+    add_compile_definitions(NOMINMAX)
 endif()
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -90,5 +93,9 @@ target_link_libraries(recorder-app PRIVATE
 )
 if (WIN32)
     target_link_libraries(recorder-app PRIVATE wbemuuid)
+endif()
+
+if (LINUX)
+    target_link_options(recorder-app PRIVATE -static-libstdc++ -static-libgcc)
 endif()
 target_include_directories(recorder-app PRIVATE ${BEXT_DI_INCLUDE_DIRS})

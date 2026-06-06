@@ -1,0 +1,174 @@
+name: Build Binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_recorder:
+        description: 'Build recorder (C++)'
+        type: boolean
+        default: true
+      build_analyzer:
+        description: 'Build analyzer (Svelte)'
+        type: boolean
+        default: true
+      upload_artifacts:
+        description: 'Upload build artifacts'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-recorder-windows:
+    if: ${{ inputs.build_recorder }}
+    runs-on: windows-latest
+    name: Recorder - Windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: '${{ runner.temp }}/vcpkg'
+          vcpkgGitCommitId: 'f6672d8e480ccdecddfad3fd1b838ba369ffe6cd'
+
+      - name: Configure CMake (Ninja)
+        run: |
+          cmake --preset "vcpkg - Windows MSVC" -S recorder -B recorder/build
+        env:
+          VCPKG_ROOT: ${{ runner.temp }}/vcpkg
+
+      - name: Build Recorder
+        run: cmake --build recorder/build --config Release
+
+      - name: Verify Binary
+        run: |
+          $binary = "recorder/build/Release/recorder-app.exe"
+          if (Test-Path $binary) {
+            $info = Get-Item $binary
+            Write-Host "Binary found: $($info.FullName)"
+            Write-Host "Size: $($info.Length) bytes"
+          } else {
+            Write-Error "Binary not found!"
+            exit 1
+          }
+
+      - name: Bundle Runtime DLLs
+        shell: pwsh
+        run: |
+          $dllSource = "recorder/build/vcpkg_installed/x64-windows/bin"
+          $dllDest = "recorder/build/Release"
+          if (Test-Path $dllSource) {
+            Copy-Item -Path (Join-Path $dllSource "*.dll") -Destination $dllDest -Force
+            Write-Host "Bundled DLLs:"
+            Get-ChildItem -Path $dllDest -Filter "*.dll" | Select-Object Name, Length
+          } else {
+            Write-Host "No DLL directory found - static build assumed"
+          }
+
+      - name: Upload Artifact
+        if: ${{ inputs.upload_artifacts }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: recorder-windows
+          path: recorder/build/Release
+          retention-days: 7
+
+  build-recorder-linux:
+    if: ${{ inputs.build_recorder }}
+    runs-on: ubuntu-latest
+    name: Recorder - Linux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libevdev-dev libsystemd-dev pkg-config ninja-build autoconf autoconf-archive automake libtool libltdl-dev
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: '${{ runner.temp }}/vcpkg'
+          vcpkgGitCommitId: 'f6672d8e480ccdecddfad3fd1b838ba369ffe6cd'
+
+      - name: Configure CMake (Ninja)
+        run: |
+          cmake --preset "vcpkg - Ninja" -S recorder -B recorder/build
+        env:
+          VCPKG_ROOT: ${{ runner.temp }}/vcpkg
+
+      - name: Build Recorder
+        run: cmake --build recorder/build --config Release
+
+      - name: Verify Binary
+        run: |
+          binary="recorder/build/recorder-app"
+          if [ -f "$binary" ]; then
+            echo "Binary found: $binary"
+            ls -la "$binary"
+            file "$binary"
+            echo ""
+            echo "Dynamic library dependencies:"
+            ldd "$binary" || true
+          else
+            echo "Binary not found!"
+            exit 1
+          fi
+
+      - name: Upload Artifact
+        if: ${{ inputs.upload_artifacts }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: recorder-linux
+          path: recorder/build/recorder-app
+          retention-days: 7
+
+  build-analyzer:
+    if: ${{ inputs.build_analyzer }}
+    runs-on: ubuntu-latest
+    name: Analyzer (Svelte)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: analyzer/pnpm-lock.yaml
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: analyzer
+
+      - name: Build Analyzer
+        run: pnpm run build
+        working-directory: analyzer
+
+      - name: Verify Build
+        run: |
+          if [ -d "analyzer/dist" ] && [ -f "analyzer/dist/index.html" ]; then
+            echo "Build successful: analyzer/dist/"
+            ls -la analyzer/dist/
+          else
+            echo "Build output not found!"
+            exit 1
+          fi
+
+      - name: Upload Artifact
+        if: ${{ inputs.upload_artifacts }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: analyzer
+          path: analyzer/dist/
+          retention-days: 7

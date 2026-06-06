@@ -2,6 +2,7 @@
 #include <systemd/sd-device.h>
 #include <cstdio>
 #include <cstring>
+#include <format>
 #include <iostream>
 #include <vector>
 #include <tuple>

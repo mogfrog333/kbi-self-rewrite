@@ -29,11 +29,6 @@
     "vite": "^6.3.5",
     "vite-plugin-wasm": "^3.4.1"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
-  },
   "dependencies": {
     "@lng2004/rustfft-shim": "^0.1.0",
     "avl": "^1.6.0",
